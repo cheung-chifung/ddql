@@ -97,7 +97,7 @@ named!(pub binary_literal<CompleteByteSlice, Literal>,
            recognize!(pair!(alphanumeric, tag!("=")))
        ),
         |(_, b):(_, CompleteByteSlice)| {
-            base64::decode(b.0).map(|x| Literal::Binary(x))
+            decode(b.0).map(|x| Literal::Binary(x))
         }
       )
 );

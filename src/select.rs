@@ -113,7 +113,6 @@ named!(pub select_statement<CompleteByteSlice, SelectStatement>,
         fields: ws!(field_expr) >>
         from_clause: ws!(from_clause) >>
         where_clause: opt!(ws!(where_clause)) >>
-        tag!(";") >>
             (SelectStatement{fields, from_clause, where_clause})
     )
 );
