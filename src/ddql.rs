@@ -1,22 +1,28 @@
 use nom::types::CompleteByteSlice;
 use select;
+use schema;
 use std::fmt;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DdqlStatement {
+pub enum Query {
     Select(select::SelectStatement),
+    ShowTables,
+    None,
 }
 
-named!(pub ddql<CompleteByteSlice, DdqlStatement>,
+named!(pub parse<CompleteByteSlice, Query>,
     alt!(
-        map!(select::select_statement, |s| DdqlStatement::Select(s))
+        map!(schema::show_tables_statement, |s| Query::ShowTables) |
+        map!(select::select_statement, |s| Query::Select(s))
     )
 );
 
-impl fmt::Display for DdqlStatement {
+impl fmt::Display for Query {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            DdqlStatement::Select(s) => write!(f, "{}", s),
+            Query::Select(s) => write!(f, "{}", s),
+            Query::ShowTables => write!(f, "SHOW TABLES"),
+            _ => write!(f, "unknown"),
         }
     }
 }

@@ -15,7 +15,9 @@ pub enum Literal {
     String(String),
     Binary(Vec<u8>),
     Map(HashMap<String, Literal>),
-    Set(Vec<Literal>),
+    NumberSet(Vec<Literal>),
+    StringSet(Vec<Literal>),
+    BinarySet(Vec<Literal>),
     List(Vec<Literal>),
 }
 
@@ -29,22 +31,37 @@ impl fmt::Display for Literal {
             Literal::Binary(bin) => write!(f, "#{}", encode(bin)),
             Literal::Map(m) => {
                 write!(f, "{{");
+                let l = m.len();
+                let mut i = 1;
                 for (k, v) in m {
-                    write!(f, "\"{}\": {}", k, v);
+                    if i == l {
+                        write!(f, "\"{}\": {}", k, v);
+                    } else {
+                        write!(f, "\"{}\": {},", k, v);
+                    }
+                    i = i + 1;
                 }
                 write!(f, "}}")
             }
             Literal::List(l) => {
                 write!(f, "[");
-                for v in l {
-                    write!(f, "{}", v);
+                if let Some((last, rest)) = l.as_slice().split_last() {
+                    for v in rest {
+                        write!(f, "{},", v);
+                    }
+                    write!(f, "{}", last);
                 }
                 write!(f, "]")
             }
-            Literal::Set(s) => {
+            Literal::StringSet(s) |
+            Literal::NumberSet(s) |
+            Literal::BinarySet(s) => {
                 write!(f, "{{");
-                for v in s {
-                    write!(f, "{}", v);
+                if let Some((last, rest)) = s.as_slice().split_last() {
+                    for v in rest {
+                        write!(f, "{},", v);
+                    }
+                    write!(f, "{}", last);
                 }
                 write!(f, "}}")
             }
@@ -102,8 +119,16 @@ named!(pub binary_literal<CompleteByteSlice, Literal>,
       )
 );
 
-named!(pub set_literal<CompleteByteSlice, Literal>,
-   ws!(map!(delimited!(tag!("{"), separated_list!(tag!(","), literal), tag!("}")), |v: Vec<Literal>| (Literal::Set(v))))
+named!(pub number_set_literal<CompleteByteSlice, Literal>,
+   ws!(map!(delimited!(tag!("{"), separated_list!(tag!(","), number_literal), tag!("}")), |v: Vec<Literal>| (Literal::NumberSet(v))))
+);
+
+named!(pub string_set_literal<CompleteByteSlice, Literal>,
+       ws!(map!(delimited!(tag!("{"), separated_list!(tag!(","), string_literal), tag!("}")), |v: Vec<Literal>| (Literal::StringSet(v))))
+);
+
+named!(pub binary_set_literal<CompleteByteSlice, Literal>,
+       ws!(map!(delimited!(tag!("{"), separated_list!(tag!(","), binary_literal), tag!("}")), |v: Vec<Literal>| (Literal::BinarySet(v))))
 );
 
 named!(pub list_literal<CompleteByteSlice, Literal>,
@@ -142,7 +167,9 @@ named!(pub literal<CompleteByteSlice, Literal>,
             string_literal |
             boolean_literal |
             binary_literal |
-            set_literal |
+            string_set_literal |
+            number_set_literal |
+            binary_set_literal |
             list_literal |
             map_literal
         ))
@@ -287,7 +314,7 @@ named!(pub non_space_string<CompleteByteSlice, String>,
        )
 );
 
-named!(pub attrname<CompleteByteSlice, AttrName>, alt!(attrname_normal));
+named!(pub attrname<CompleteByteSlice, AttrName>, alt!(attrname_normal | attrname_reserved));
 
 named!(pub attrname_normal<CompleteByteSlice, AttrName>,
        map!(non_space_string, |x| AttrName {kind: AttrNameKind::Normal, name: x})
