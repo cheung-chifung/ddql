@@ -2,9 +2,10 @@ use std::fmt;
 use std::sync::Arc;
 // use rusoto_core::{Region, CredentialsError, HttpDispatchError};
 use rusoto_core::Region;
-use rusoto_dynamodb::{DynamoDb, DynamoDbClient, AttributeValue, ListTablesInput, ListTablesError,
-                      ScanInput, ScanError, QueryInput, QueryError, GetItemInput, GetItemError,
-                      BatchGetItemInput, BatchGetItemError};
+use rusoto_dynamodb::{DynamoDb, DynamoDbClient, AttributeValue, AttributeDefinition,
+                      KeySchemaElement, TableDescription, DescribeTableInput, DescribeTableError,
+                      ListTablesInput, ListTablesError, ScanInput, ScanError, QueryInput,
+                      QueryError, GetItemInput, GetItemError, BatchGetItemInput, BatchGetItemError};
 use ddql::Query;
 use common::Literal;
 use std::cell::RefCell;
@@ -17,6 +18,7 @@ use select;
 
 pub struct Executor {
     pub client: Arc<DynamoDbClient>,
+    tables: RefCell<HashMap<String, TableDesc>>,
 }
 
 #[derive(Debug)]
@@ -61,6 +63,8 @@ impl ExecuteResult {
             for (i, h) in headers_vec.iter().enumerate() {
                 if let Some(v) = attrs.get(&h.to_string()) {
                     r.insert_cell(i, Cell::new(format!("{}", v).as_str()));
+                } else {
+                    r.insert_cell(i, Cell::new("--"));
                 }
             }
             table.add_row(r);
@@ -100,6 +104,7 @@ impl From<HashMap<String, AttributeValue>> for ExecuteResultItem {
 pub enum ExecuteError {
     DynamoDBListTableError(ListTablesError),
     DynamoDBScanError(ScanError),
+    DynamoDBDescribeTableError(DescribeTableError),
     InvalidQuery,
 }
 
@@ -115,9 +120,18 @@ impl From<ScanError> for ExecuteError {
     }
 }
 
+impl From<DescribeTableError> for ExecuteError {
+    fn from(error: DescribeTableError) -> Self {
+        ExecuteError::DynamoDBDescribeTableError(error)
+    }
+}
+
 impl Executor {
     pub fn new(c: DynamoDbClient) -> Self {
-        Executor { client: Arc::new(c) }
+        Executor {
+            client: Arc::new(c),
+            tables: RefCell::new(HashMap::new()),
+        }
     }
 
     pub fn execute(&self, q: Query) -> Result<ExecuteResult, ExecuteError> {
@@ -139,6 +153,9 @@ impl Executor {
     fn execute_scan(&self, s: select::SelectStatement) -> Result<ExecuteResult, ExecuteError> {
         let table_name = s.from_clause.table;
         let mut scan_input: ScanInput = Default::default();
+
+        let desc = try!(self.load_table_desc(table_name.clone()));
+        println!("table describe: {:?}", desc);
 
         // setup table name
         scan_input.table_name = table_name.clone();
@@ -184,6 +201,150 @@ impl Executor {
             }
         }
         Ok(res)
+    }
+
+    pub fn load_table_desc(&self, table: String) -> Result<TableDesc, ExecuteError> {
+        if let Some(d) = self.tables.borrow_mut().get(&table) {
+            return Ok(d.clone());
+        }
+        let desc_table_input =
+            DescribeTableInput { table_name: table.clone(), ..Default::default() };
+        let output = try!(self.client.describe_table(&desc_table_input).sync());
+        if let Some(desc) = &output.table {
+            if let Some(d) = TableDesc::from_desc(desc.clone()) {
+                self.tables.borrow_mut().insert(table, d.clone());
+                return Ok(d);
+            }
+        }
+        Err(ExecuteError::InvalidQuery)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TableDesc {
+    pub desc: TableDescription,
+    pub key_schema: KeySchema,
+}
+
+impl TableDesc {
+    pub fn from_desc(desc: TableDescription) -> Option<Self> {
+        match &desc.attribute_definitions {
+            Some(ref ads) => {
+                let key_attrs: HashMap<String, KeyDef> = ads.into_iter()
+                    .filter_map(|k| KeyDef::from_attr_def(k.clone()))
+                    .map(|k| (k.name.clone(), k))
+                    .collect();
+
+                let hash_key_name = desc.clone()
+                    .key_schema
+                    .and_then(|ks| {
+                        ks.into_iter()
+                            .filter(|ref k| k.key_type.as_str() == "HASH")
+                            .map(|k| k.attribute_name)
+                            .nth(0)
+                    });
+
+                let range_key_name = desc.clone()
+                    .key_schema
+                    .and_then(|ks| {
+                        ks.into_iter()
+                            .filter(|ref k| k.key_type.as_str() == "RANGE")
+                            .map(|k| k.attribute_name)
+                            .nth(0)
+                    });
+                match hash_key_name {
+                    Some(ref hash_key) => {
+                        println!("hash key name:{:?}", hash_key);
+                        println!("range key name:{:?}", range_key_name);
+                        Some(TableDesc {
+                            desc: desc.clone(),
+                            key_schema: KeySchema {
+                                hash: KeyDef {
+                                    name: "test".to_string(),
+                                    attr_type: KeyAttrType::String,
+                                },
+                                range: None,
+                            },
+                        })
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KeySchema {
+    pub hash: KeyDef,
+    pub range: Option<KeyDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyDef {
+    pub name: String,
+    pub attr_type: KeyAttrType,
+}
+
+impl KeyDef {
+    pub fn from_attr_def(v: AttributeDefinition) -> Option<Self> {
+        KeyAttrType::from_string(v.attribute_type.clone()).map(|t| {
+            KeyDef {
+                name: v.attribute_name,
+                attr_type: t,
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum KeyAttrType {
+    String,
+    Number,
+    Binary,
+}
+
+impl KeyAttrType {
+    fn from_string(value: String) -> Option<Self> {
+        match value.to_uppercase().as_str() {
+            "S" => Some(KeyAttrType::String),
+            "N" => Some(KeyAttrType::Number),
+            "B" => Some(KeyAttrType::Binary),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AttrType {
+    Null,
+    Boolean,
+    String,
+    Number,
+    Binary,
+    List,
+    Map,
+    NumberSet,
+    StringSet,
+    BinarySet,
+}
+
+impl AttrType {
+    fn from_string(value: String) -> Option<Self> {
+        match value.to_uppercase().as_str() {
+            "NULL" => Some(AttrType::Null),
+            "BOOL" => Some(AttrType::Boolean),
+            "S" => Some(AttrType::String),
+            "N" => Some(AttrType::Number),
+            "B" => Some(AttrType::Binary),
+            "L" => Some(AttrType::List),
+            "M" => Some(AttrType::Map),
+            "NS" => Some(AttrType::NumberSet),
+            "SS" => Some(AttrType::StringSet),
+            "BS" => Some(AttrType::BinarySet),
+            _ => None,
+        }
     }
 }
 
