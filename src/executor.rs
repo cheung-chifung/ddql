@@ -235,40 +235,35 @@ impl TableDesc {
                     .map(|k| (k.name.clone(), k))
                     .collect();
 
-                let hash_key_name = desc.clone()
+                let hash_key = desc.clone()
                     .key_schema
                     .and_then(|ks| {
                         ks.into_iter()
                             .filter(|ref k| k.key_type.as_str() == "HASH")
                             .map(|k| k.attribute_name)
                             .nth(0)
-                    });
+                    })
+                    .and_then(|ref k| key_attrs.get(k));
 
-                let range_key_name = desc.clone()
+                let range_key = desc.clone()
                     .key_schema
                     .and_then(|ks| {
                         ks.into_iter()
                             .filter(|ref k| k.key_type.as_str() == "RANGE")
                             .map(|k| k.attribute_name)
                             .nth(0)
-                    });
-                match hash_key_name {
-                    Some(ref hash_key) => {
-                        println!("hash key name:{:?}", hash_key);
-                        println!("range key name:{:?}", range_key_name);
-                        Some(TableDesc {
-                            desc: desc.clone(),
-                            key_schema: KeySchema {
-                                hash: KeyDef {
-                                    name: "test".to_string(),
-                                    attr_type: KeyAttrType::String,
-                                },
-                                range: None,
-                            },
-                        })
-                    }
-                    None => None,
-                }
+                    })
+                    .and_then(|k| key_attrs.get(&k));
+
+                hash_key.and_then(|hk| {
+                    Some(TableDesc {
+                        desc: desc.clone(),
+                        key_schema: KeySchema {
+                            hash: hk.clone(),
+                            range: range_key.map(|x| x.clone()),
+                        },
+                    })
+                })
             }
             None => None,
         }
